@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<title>Fingerprint Camera Quality Lab</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<main>
+  <h1>Fingerprint Camera Quality Lab</h1>
+
+  <div class="stage">
+    <video id="video" playsinline autoplay muted></video>
+    <img id="shot" hidden alt="Captured fingerprint">
+    <div id="roi" hidden></div>
+  </div>
+
+  <div id="status" class="status">TAP START CAMERA</div>
+  <div id="metrics" class="metrics"></div>
+
+  <div class="actions">
+    <button id="start">Start camera</button>
+    <button id="retake" hidden>Retake</button>
+    <button id="save" hidden>Save</button>
+  </div>
+
+  <p id="note" class="note"></p>
+</main>
+<script src="script.js"></script>
+</body>
+</html>
