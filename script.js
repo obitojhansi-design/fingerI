@@ -60,8 +60,8 @@
 
 
 // ---- Supabase (optional direct upload) ----
-const SUPABASE_URL = '';
-const SUPABASE_ANON_KEY = '';
+const SUPABASE_URL = 'https://ezmcxetphpxkdqydhpxr.supabase.co';
+const SUPABASE_ANON_KEY = 'sb_publishable_eFNwkWSJ0PIW6UO1VpR-Ig_rfJ2agpy';
 const SUPABASE_BUCKET = 'fingerprints';
 const sb = (SUPABASE_URL && SUPABASE_ANON_KEY && window.supabase)
   ? window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY)
