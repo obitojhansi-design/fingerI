@@ -74,6 +74,32 @@ h1 {
   box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.35), 0 0 30px rgba(48, 164, 108, 0.5);
 }
 
+/* Verification progress ring, centered over the ROI */
+.progress-ring {
+  position: absolute;
+  top: 50%; left: 50%;
+  width: 150px; height: 150px;
+  margin: -75px 0 0 -75px;
+  pointer-events: none;
+  z-index: 2;
+  opacity: 0;
+  transition: opacity .25s ease;
+}
+.progress-ring circle {
+  fill: none;
+  stroke-width: 3;
+}
+.ring-bg { stroke: rgba(255, 255, 255, 0.10); }
+.ring-fg {
+  stroke: var(--good);
+  stroke-linecap: round;
+  stroke-dasharray: 283;
+  stroke-dashoffset: 283;
+  transform: rotate(-90deg);
+  transform-origin: 50% 50%;
+  transition: stroke-dashoffset .25s linear;
+}
+
 .success {
   position: absolute; inset: 0;
   display: flex; flex-direction: column; align-items: center; justify-content: center;
@@ -81,6 +107,7 @@ h1 {
   background: linear-gradient(180deg, rgba(12,14,20,0.88), rgba(12,14,20,0.97));
   backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
   animation: fadeIn .45s ease;
+  z-index: 3;
 }
 @keyframes fadeIn {
   from { opacity: 0; transform: scale(.98); }
@@ -191,5 +218,12 @@ button:disabled { opacity: .5; cursor: default; }
   background: linear-gradient(180deg, rgba(245, 165, 36, 0.28), rgba(245, 165, 36, 0.10));
   border-color: var(--fair);
 }
+
+.retry {
+  margin-top: 10px;
+  background: linear-gradient(180deg, rgba(229, 72, 77, 0.22), rgba(229, 72, 77, 0.08));
+  border-color: rgba(229, 72, 77, 0.5);
+}
+.retry:hover { border-color: var(--poor); }
 
 [hidden] { display: none !important; }

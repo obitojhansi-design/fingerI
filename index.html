@@ -30,6 +30,10 @@
     <video id="video" playsinline autoplay muted></video>
     <div id="roi" hidden></div>
     <div id="focus" class="focus" hidden></div>
+    <svg id="progress" class="progress-ring" viewBox="0 0 100 100">
+      <circle class="ring-bg" cx="50" cy="50" r="45"/>
+      <circle id="ringFg" class="ring-fg" cx="50" cy="50" r="45"/>
+    </svg>
 
     <div id="success" class="success" hidden>
       <div class="fingerprint-visual"><img id="thumb" alt=""></div>
@@ -48,6 +52,7 @@
     <pre id="metrics" class="metrics"></pre>
     <p id="hint" class="hint"></p>
     <button id="torch" class="torch">🔦 Flash: OFF</button>
+    <button id="retry" class="retry" hidden>Try Again</button>
   </div>
 
   <button id="begin">Begin</button>

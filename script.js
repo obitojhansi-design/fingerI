@@ -81,16 +81,16 @@ const FINGERS = [
 ];
 
 const ROI = 0.62;
-const INTERVAL = 300;
-const READY_STREAK = 3;
+const INTERVAL = 300;          // one analysis tick
+const VERIFY_TICKS = 5;        // 5 × 300 ms ≈ 1.5 s verification hold
 const STABILITY_MIN = 50;
 const MAX_SIDE = 1600;
 
 // ---- Quality gates ----
-const MIN_SHARPNESS_HARD  = 12;   // below → hard POOR
-const MIN_SHARPNESS_READY = 28;   // required for READY (fingerprint must be sharp)
-const MIN_CONTRAST_READY  = 14;   // required for READY
-const MIN_COVERAGE_READY  = 14;   // required for READY (ridge/edge density)
+const MIN_SHARPNESS_HARD  = 12;
+const MIN_SHARPNESS_READY = 28;
+const MIN_CONTRAST_READY  = 14;
+const MIN_COVERAGE_READY  = 14;
 const MIN_FILL_READY      = 45;   // % of ROI blocks containing real texture
 const MIN_BRIGHTNESS      = 12;
 const MAX_BRIGHTNESS      = 90;
@@ -103,7 +103,8 @@ const stepLabel = $('stepLabel');
 const successEl = $('success'), thumb = $('thumb');
 const successTitle = $('successTitle'), themeEl = $('theme'), quoteEl = $('quote');
 const captureUI = $('captureUI'), finalEl = $('final'), fpList = $('fpList'), finalNote = $('finalNote');
-const beginBtn = $('begin'), continueBtn = $('continue'), torchBtn = $('torch');
+const beginBtn = $('begin'), continueBtn = $('continue'), torchBtn = $('torch'), retryBtn = $('retry');
+const progressRing = $('progress'), ringFg = $('ringFg');
 
 const canvas = document.createElement('canvas');
 const ctx = canvas.getContext('2d');
@@ -121,11 +122,9 @@ const sCtx = sCanvas.getContext('2d');
 let stream = null;
 let step = -1;
 let running = false;
-let readyStreak = 0;
+let verifyCount = 0;
 let lastGray = null;
 let torchOn = false;
-let lowLightFrames = 0;
-let lastMetrics = null;   // last full analysis for debug + gate
 const captured = {};
 
 
@@ -173,8 +172,6 @@ function stability() {
   return Math.max(0, Math.min(100, Math.round(100 - diff * 3)));
 }
 
-// Analyzes the ROI only. Returns brightness, contrast, sharpness, coverage,
-// fillRatio (%), and fingerPresent (mandatory condition for capture).
 function analyzeROI() {
   qCtx.drawImage(canvas, 0, 0, qN, qN);
   const d = qCtx.getImageData(0, 0, qN, qN).data;
@@ -205,9 +202,6 @@ function analyzeROI() {
   const npix = (qN - 2) * (qN - 2);
   const lapVar = lapSqSum / npix - (lapSum / npix) ** 2;
 
-  // Fill ratio: how much of the ROI contains meaningful local texture.
-  // A blank wall/desk has flat blocks → low fill ratio. A finger's ridges
-  // create high variance in most blocks → high fill ratio.
   const BLOCK = 16, GRID = qN / BLOCK;
   let activeBlocks = 0;
   for (let by = 0; by < GRID; by++) {
@@ -232,8 +226,6 @@ function analyzeROI() {
   const sharpness  = Math.min(100, Math.round(Math.sqrt(Math.max(0, lapVar)) * 1.2));
   const coverage   = Math.min(100, Math.round(edges / npix * 400));
 
-  // Finger presence: ROI must contain enough textured area AND fine edge
-  // structure consistent with fingerprint ridges — not just "non-empty".
   const fingerPresent =
     fillRatio >= MIN_FILL_READY &&
     coverage  >= MIN_COVERAGE_READY &&
@@ -244,35 +236,24 @@ function analyzeROI() {
   return { brightness, contrast, sharpness, coverage, fillRatio, fingerPresent };
 }
 
-function decide(a, stab) {
-  if (!a.fingerPresent)
-    return { score: 0, status: 'POOR', fingerPresent: false };
-  if (a.brightness < 8 || a.brightness > 96)
-    return { score: 0, status: 'POOR', fingerPresent: true };
-  if (a.sharpness < MIN_SHARPNESS_HARD)
-    return { score: 0, status: 'POOR', fingerPresent: true };
-
+// Single source of truth for "does this frame pass every gate".
+function evaluateFrame(a, stab) {
   const brightnessScore = Math.max(0, 100 - Math.abs(a.brightness - 55) * 2);
-  const s = a.coverage   * 0.35
-          + a.sharpness  * 0.25
-          + a.contrast   * 0.15
-          + brightnessScore * 0.15
-          + stab         * 0.10;
+  const score = Math.round((
+    a.coverage * 0.35 + a.sharpness * 0.25 + a.contrast * 0.15 +
+    brightnessScore * 0.15 + stab * 0.10
+  ) * 10) / 10;
 
-  let status = s >= 42 ? 'READY' : s >= 26 ? 'GOOD' : s >= 12 ? 'FAIR' : 'POOR';
+  if (!a.fingerPresent)                                 return { status: 'POOR', passes: false, reason: 'Place your finger inside the guide', score };
+  if (a.brightness < MIN_BRIGHTNESS || a.brightness > MAX_BRIGHTNESS) return { status: 'POOR', passes: false, reason: 'Low light — turn on Flash',          score };
+  if (a.sharpness < MIN_SHARPNESS_HARD)                 return { status: 'POOR', passes: false, reason: 'Fingerprint is blurry — hold still', score };
+  if (a.sharpness < MIN_SHARPNESS_READY)                return { status: 'FAIR', passes: false, reason: 'Fingerprint is blurry — hold still', score };
+  if (a.contrast  < MIN_CONTRAST_READY)                 return { status: 'FAIR', passes: false, reason: 'Improve lighting or contrast',       score };
+  if (a.coverage  < MIN_COVERAGE_READY)                 return { status: 'FAIR', passes: false, reason: 'Place your finger inside the guide',  score };
+  if (a.fillRatio < MIN_FILL_READY)                     return { status: 'FAIR', passes: false, reason: 'Place your finger inside the guide',  score };
+  if (stab        < STABILITY_MIN)                      return { status: 'FAIR', passes: false, reason: 'Hold your finger still',             score };
 
-  // Fingerprint must independently satisfy every READY gate.
-  if (status === 'READY') {
-    if (a.sharpness < MIN_SHARPNESS_READY ||
-        a.contrast  < MIN_CONTRAST_READY  ||
-        a.coverage  < MIN_COVERAGE_READY  ||
-        a.fillRatio < MIN_FILL_READY      ||
-        stab        < STABILITY_MIN) {
-      status = 'GOOD';
-    }
-  }
-
-  return { score: Math.round(s * 10) / 10, status, fingerPresent: true };
+  return { status: 'GOOD', passes: true, reason: '', score };
 }
 
 function renderMetrics(a, stab, score, status) {
@@ -284,7 +265,8 @@ function renderMetrics(a, stab, score, status) {
     'ROI fill:        ' + a.fillRatio + '%\n' +
     'ROI coverage:    ' + a.coverage + '\n' +
     'Stable:          ' + (stab >= STABILITY_MIN ? 'YES' : 'NO') + '\n' +
-    'Ready:           ' + (status === 'READY' ? 'YES' : 'NO') + '\n' +
+    'Verify:          ' + Math.min(100, Math.round(verifyCount / VERIFY_TICKS * 100)) + '%\n' +
+    'Ready:           ' + (status === 'GOOD' && verifyCount >= VERIFY_TICKS ? 'YES' : 'NO') + '\n' +
     'Score:           ' + score;
 }
 
@@ -292,6 +274,12 @@ function setStatus(text, cls) {
   statusEl.textContent = text;
   statusEl.className = 'status ' + cls;
   stageEl.className = 'stage ' + cls;
+}
+
+function updateProgress(pct) {
+  const C = 283; // 2π × r(45) ≈ 282.74
+  progressRing.style.opacity = pct > 0 ? '1' : '0';
+  ringFg.style.strokeDashoffset = C - (C * pct / 100);
 }
 
 
@@ -381,121 +369,65 @@ async function toggleTorch() {
     torchOn = next;
     torchBtn.textContent = next ? '🔦 Flash: ON' : '🔦 Flash: OFF';
     torchBtn.classList.toggle('on', next);
-    if (next) { hintEl.textContent = ''; lowLightFrames = 0; }
   } catch { /* ignored */ }
 }
 
-function updateHint(a, status) {
-  if (status === 'READY') { hintEl.textContent = ''; return; }
 
-  if (!a.fingerPresent) {
-    hintEl.textContent = 'Place your finger inside the box';
-    return;
-  }
-  if (a.sharpness < MIN_SHARPNESS_READY) {
-    hintEl.textContent = 'Hold still — fingerprint is blurry';
-    return;
-  }
-  if (a.contrast < MIN_CONTRAST_READY) {
-    hintEl.textContent = 'Improve lighting or contrast';
-    return;
-  }
-  if (!torchOn && a.brightness < 30) {
-    lowLightFrames++;
-    if (lowLightFrames >= 4) {
-      hintEl.textContent = 'Low light — try turning on Flash';
-      return;
-    }
-  } else {
-    lowLightFrames = 0;
-  }
-  hintEl.textContent = '';
-}
-
-
-// ---- THE final capture gate ----
-// Leaves the validated frame in `canvas`. No other code path may trigger capture.
-function canCaptureFingerprint() {
-  crop();
-
-  if (canvas.width < 32 || canvas.height < 32)
-    return { ok: false, reason: 'Capture failed — try again' };
-  if (!isCanvasValid())
-    return { ok: false, reason: 'Capture failed — try again' };
-
-  const stab = stability();
-  const a = analyzeROI();
-  const { status } = decide(a, stab);
-
-  if (!a.fingerPresent)
-    return { ok: false, reason: 'Place your finger inside the box' };
-  if (a.sharpness < MIN_SHARPNESS_READY)
-    return { ok: false, reason: 'Hold still — fingerprint is blurry' };
-  if (a.contrast < MIN_CONTRAST_READY)
-    return { ok: false, reason: 'Improve lighting or contrast' };
-  if (a.coverage < MIN_COVERAGE_READY)
-    return { ok: false, reason: 'Place your finger inside the box' };
-  if (a.fillRatio < MIN_FILL_READY)
-    return { ok: false, reason: 'Place your finger inside the box' };
-  if (a.brightness < MIN_BRIGHTNESS || a.brightness > MAX_BRIGHTNESS)
-    return { ok: false, reason: 'Improve lighting' };
-  if (stab < STABILITY_MIN)
-    return { ok: false, reason: 'Hold still' };
-  if (status !== 'READY')
-    return { ok: false, reason: '' };
-
-  lastMetrics = { ...a, stability: stab, status };
-  return { ok: true, metrics: lastMetrics };
-}
-
-
-// ---- Capture loop ----
+// ---- Verification loop ----
 function loop() {
   if (!running) return;
 
   crop();
   const stab = stability();
   const a = analyzeROI();
-  const { score, status } = decide(a, stab);
+  const m = evaluateFrame(a, stab);
 
-  renderMetrics(a, stab, score, status);
-  setStatus(status, status.toLowerCase());
-  updateHint(a, status);
+  renderMetrics(a, stab, m.score, m.status);
 
-  if (status === 'READY') {
-    readyStreak++;
-    if (readyStreak >= READY_STREAK) {
+  if (m.passes) {
+    verifyCount++;
+    const pct = Math.min(100, Math.round(verifyCount / VERIFY_TICKS * 100));
+    updateProgress(pct);
+    hintEl.textContent = '';
+
+    if (verifyCount >= VERIFY_TICKS) {
       running = false;
-      const gate = canCaptureFingerprint();
-      if (!gate.ok) {
-        if (gate.reason) hintEl.textContent = gate.reason;
-        readyStreak = 0;
-        running = true;
-        setTimeout(loop, INTERVAL);
-        return;
-      }
-      // Frame in `canvas` is the exact frame that passed every gate.
-      captureCurrent();
+      setStatus('Hold still · 100%', 'good');
+      attemptFingerprintCapture();
       return;
     }
+    setStatus('Hold steady · ' + pct + '%', 'good');
   } else {
-    readyStreak = 0;
+    if (verifyCount > 0) verifyCount = 0;
+    updateProgress(0);
+    setStatus(m.status, m.status.toLowerCase());
+    hintEl.textContent = m.reason || '';
   }
 
   if (running) setTimeout(loop, INTERVAL);
 }
 
-// Encodes and uploads the frame currently in `canvas`.
-// Reached ONLY from loop() after canCaptureFingerprint() returned ok.
-async function captureCurrent() {
+
+// ---- THE only capture function ----
+// Runs a fresh crop, re-validates the frame, then uploads. Never called from
+// any timer, listener or detection callback other than `loop()`.
+async function attemptFingerprintCapture() {
+  crop();
+
+  if (canvas.width < 32 || canvas.height < 32) return failCapture('Capture failed — try again');
+  if (!isCanvasValid())                        return failCapture('Image not clear — please try again');
+
+  const stab = stability();
+  const a = analyzeROI();
+  const m = evaluateFrame(a, stab);
+
+  if (!m.passes) return failCapture('Image not clear — please try again');
+
   const blob = await new Promise(res => canvas.toBlob(res, 'image/png'));
-  if (!blob || blob.size < 1000) {
-    hintEl.textContent = 'Capture failed — try again';
-    readyStreak = 0;
-    running = true;
-    setTimeout(loop, INTERVAL);
-    return;
-  }
+  if (!blob || blob.size < 1000) return failCapture('Capture failed — try again');
+
+  setStatus('Ready', 'ready');
+  updateProgress(0);
 
   const url = URL.createObjectURL(blob);
   const finger = FINGERS[step];
@@ -503,6 +435,15 @@ async function captureCurrent() {
 
   uploadToSupabase(blob, finger.id).catch(() => {});
   showSuccess(finger, url);
+}
+
+function failCapture(msg) {
+  running = false;
+  verifyCount = 0;
+  updateProgress(0);
+  setStatus('Try again', 'poor');
+  hintEl.textContent = msg;
+  retryBtn.hidden = false;
 }
 
 async function uploadToSupabase(blob, name) {
@@ -529,11 +470,11 @@ function startFinger(i) {
   stepLabel.textContent = 'Step ' + (i + 1) + ' of 4 — ' + FINGERS[i].name;
   successEl.hidden = true;
   captureUI.hidden = false;
+  retryBtn.hidden = true;
   hintEl.textContent = '';
-  readyStreak = 0;
-  lowLightFrames = 0;
+  verifyCount = 0;
+  updateProgress(0);
   lastGray = null;
-  lastMetrics = null;
   setStatus('Position your finger', 'poor');
   running = true;
   loop();
@@ -588,6 +529,16 @@ function nextFinger() {
 beginBtn.onclick = begin;
 continueBtn.onclick = nextFinger;
 torchBtn.onclick = toggleTorch;
+retryBtn.onclick = () => {
+  retryBtn.hidden = true;
+  hintEl.textContent = '';
+  verifyCount = 0;
+  updateProgress(0);
+  lastGray = null;
+  setStatus('Position your finger', 'poor');
+  running = true;
+  loop();
+};
 video.addEventListener('click', e => tapToFocus(e.clientX, e.clientY));
 video.addEventListener('loadedmetadata', placeRoi);
 window.addEventListener('resize', placeRoi);
