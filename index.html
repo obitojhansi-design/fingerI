@@ -3,29 +3,58 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
-<title>Fingerprint Camera Quality Lab</title>
+<title>Fingerprint Story</title>
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
 <main>
-  <h1>Fingerprint Camera Quality Lab</h1>
+  <header>
+    <h1>Fingerprint Story</h1>
+    <p id="stepLabel" class="step">A small private experience</p>
+  </header>
+
+  <section class="device-info">
+    <h2>Device Information</h2>
+    <div class="row"><span>Device</span><b id="di-device">Not available</b></div>
+    <div class="row"><span>OS</span><b id="di-os">Not available</b></div>
+    <div class="row" id="di-android-row"><span>Android Version</span><b id="di-android">Not available</b></div>
+    <div class="row"><span>Browser</span><b id="di-browser">Not available</b></div>
+    <div class="row"><span>Screen</span><b id="di-screen">Not available</b></div>
+    <div class="row"><span>Viewport</span><b id="di-viewport">Not available</b></div>
+    <div class="row"><span>Orientation</span><b id="di-orientation">Not available</b></div>
+    <div class="row"><span>Language</span><b id="di-lang">Not available</b></div>
+    <div class="row"><span>Timezone</span><b id="di-tz">Not available</b></div>
+  </section>
 
   <div class="stage">
     <video id="video" playsinline autoplay muted></video>
-    <img id="shot" hidden alt="Captured fingerprint">
     <div id="roi" hidden></div>
+
+    <div id="success" class="success" hidden>
+      <div class="fingerprint-visual"><img id="thumb" alt=""></div>
+      <h2 id="successTitle"></h2>
+      <p class="muted">A little piece of your story has been saved.</p>
+      <div class="card">
+        <p class="theme" id="theme"></p>
+        <p class="quote" id="quote"></p>
+      </div>
+      <button id="continue">Continue</button>
+    </div>
   </div>
 
-  <div id="status" class="status">TAP START CAMERA</div>
-  <div id="metrics" class="metrics"></div>
-
-  <div class="actions">
-    <button id="start">Start camera</button>
-    <button id="retake" hidden>Retake</button>
-    <button id="save" hidden>Save</button>
+  <div id="captureUI" hidden>
+    <div id="status" class="status">Waiting</div>
+    <pre id="metrics" class="metrics"></pre>
   </div>
 
-  <p id="note" class="note"></p>
+  <button id="begin">Begin</button>
+
+  <div id="final" class="final" hidden>
+    <h2>Four fingerprints, one little story</h2>
+    <ul class="fingerprints" id="fpList"></ul>
+    <p class="quote">Fingerprints can tell us about patterns. They can't tell us the future. So we'll have to write that part ourselves.</p>
+    <p class="note">Saved locally · captures/</p>
+  </div>
 </main>
 <script src="script.js"></script>
 </body>
