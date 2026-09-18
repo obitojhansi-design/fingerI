@@ -18,14 +18,14 @@ def analyze(frame):
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
     gray = cv2.resize(gray, (256, 256))
 
-    sharpness = int(np.clip(cv2.Laplacian(gray, cv2.CV_64F).var() / 5, 0, 100))
+    sharpness = int(np.clip(cv2.Laplacian(gray, cv2.CV_64F).var() / 3, 0, 100))
     brightness = int(gray.mean() / 255 * 100)
     contrast = int(np.clip(gray.std() / 0.8, 0, 100))
     blur = max(0, 100 - sharpness)
 
     gabor = cv2.getGaborKernel((15, 15), 4.0, np.pi / 4, 10.0, 0.5, 0)
     ridge_map = cv2.filter2D(gray, cv2.CV_32F, gabor)
-    ridge = int(np.clip(ridge_map.std() * 1.2, 0, 100))
+    ridge = int(np.clip(ridge_map.std() * 1.8, 0, 100))
 
     edges = cv2.Canny(gray, 40, 120)
     coverage = int(np.clip(edges.mean() * 6, 0, 100))
@@ -42,14 +42,34 @@ def analyze(frame):
 
 
 def decide(m):
-    ok = (m["sharpness"] >= 45 and 30 <= m["brightness"] <= 85 and
-          m["contrast"] >= 25 and m["ridge"] >= 35 and
-          m["coverage"] >= 15 and m["position"] >= 55)
-    if ok:
-        return "READY"
-    score = (m["sharpness"] * 0.3 + m["contrast"] * 0.2 + m["ridge"] * 0.3 +
-             m["coverage"] * 0.1 + m["position"] * 0.1)
-    return "GOOD" if score >= 60 else "FAIR" if score >= 40 else "POOR"
+    # Hard fails only when the image is genuinely unusable.
+    if m["coverage"] < 4 or m["ridge"] < 6:
+        return "POOR"
+    if m["brightness"] < 8 or m["brightness"] > 97:
+        return "POOR"
+
+    brightness_score = max(0, 100 - abs(m["brightness"] - 55) * 2)
+
+    score = (
+        m["ridge"]          * 0.35 +
+        m["sharpness"]      * 0.20 +
+        m["contrast"]       * 0.15 +
+        m["coverage"]       * 0.15 +
+        m["position"]       * 0.10 +
+        brightness_score    * 0.05
+    )
+
+    if score >= 48:
+        status = "READY"
+    elif score >= 32:
+        status = "GOOD"
+    elif score >= 18:
+        status = "FAIR"
+    else:
+        status = "POOR"
+
+    m["score"] = round(score, 1)
+    return status
 
 
 @app.post("/api/analyze")

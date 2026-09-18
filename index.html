@@ -29,6 +29,7 @@
   <div class="stage">
     <video id="video" playsinline autoplay muted></video>
     <div id="roi" hidden></div>
+    <div id="focus" class="focus" hidden></div>
 
     <div id="success" class="success" hidden>
       <div class="fingerprint-visual"><img id="thumb" alt=""></div>
@@ -45,6 +46,8 @@
   <div id="captureUI" hidden>
     <div id="status" class="status">Waiting</div>
     <pre id="metrics" class="metrics"></pre>
+    <p id="hint" class="hint"></p>
+    <button id="torch" class="torch">🔦 Flash: OFF</button>
   </div>
 
   <button id="begin">Begin</button>

@@ -5,14 +5,12 @@
   const uaData = navigator.userAgentData;
   const $ = id => document.getElementById(id);
 
-  // Device type
   const isIPad = /Macintosh/.test(ua) && navigator.maxTouchPoints > 1;
   let device = 'Desktop';
   if (/iPad/i.test(ua) || isIPad) device = 'Tablet';
   else if (/Android/i.test(ua) && !/Mobi/i.test(ua)) device = 'Tablet';
   else if (/Mobi|Android|iPhone|iPod/i.test(ua) || (uaData && uaData.mobile)) device = 'Mobile';
 
-  // OS
   let os = NA;
   if (/Android/i.test(ua) || (uaData && uaData.platform === 'Android')) os = 'Android';
   else if (/iPhone|iPad|iPod/.test(ua) || isIPad) os = 'iOS';
@@ -20,7 +18,6 @@
   else if (/Mac OS X|Macintosh/i.test(ua)) os = 'macOS';
   else if (/Linux/i.test(ua)) os = 'Linux';
 
-  // Browser name + version (versions remain reliable under UA reduction)
   const pick = (re, name) => {
     const m = ua.match(re);
     return m ? name + ' ' + m[1] : null;
@@ -52,7 +49,6 @@
   $('di-tz').textContent = Intl.DateTimeFormat().resolvedOptions().timeZone || NA;
   refresh();
 
-  // Android version — only via User-Agent Client Hints, never guessed.
   if (os !== 'Android') {
     $('di-android-row').hidden = true;
   } else if (uaData && uaData.getHighEntropyValues) {
@@ -80,17 +76,17 @@ const FINGERS = [
 const ROI = 0.62;
 const INTERVAL = 450;
 const READY_STREAK = 3;
-const STABILITY_MIN = 55;
+const STABILITY_MIN = 45;
 
 const $ = id => document.getElementById(id);
 const stageEl = document.querySelector('.stage');
-const video = $('video'), roiEl = $('roi');
-const statusEl = $('status'), metricsEl = $('metrics');
+const video = $('video'), roiEl = $('roi'), focusEl = $('focus');
+const statusEl = $('status'), metricsEl = $('metrics'), hintEl = $('hint');
 const stepLabel = $('stepLabel');
 const successEl = $('success'), thumb = $('thumb');
 const successTitle = $('successTitle'), themeEl = $('theme'), quoteEl = $('quote');
 const captureUI = $('captureUI'), finalEl = $('final'), fpList = $('fpList');
-const beginBtn = $('begin'), continueBtn = $('continue');
+const beginBtn = $('begin'), continueBtn = $('continue'), torchBtn = $('torch');
 
 const canvas = document.createElement('canvas');
 const ctx = canvas.getContext('2d');
@@ -103,6 +99,8 @@ let step = -1;
 let running = false;
 let readyStreak = 0;
 let lastGray = null;
+let torchOn = false;
+let lowLightFrames = 0;
 const captured = {};
 
 function roiRect() {
@@ -163,7 +161,8 @@ function renderMetrics(m) {
     'Ridge Visibility: ' + m.ridge + '\n' +
     'Coverage:         ' + m.coverage + '%\n' +
     'Position:         ' + m.position + '\n' +
-    'Stability:        ' + m.stability;
+    'Stability:        ' + m.stability + '\n' +
+    'Score:            ' + (m.score ?? '-');
 }
 
 function setStatus(text, cls) {
@@ -172,6 +171,83 @@ function setStatus(text, cls) {
   stageEl.className = 'stage ' + cls;
 }
 
+// ---- Tap-to-focus ----
+function focusIndicator(x, y, supported) {
+  const rect = stageEl.getBoundingClientRect();
+  focusEl.style.left = (x - rect.left) + 'px';
+  focusEl.style.top  = (y - rect.top) + 'px';
+  focusEl.classList.toggle('unsupported', !supported);
+  focusEl.hidden = false;
+  focusEl.style.animation = 'none';
+  void focusEl.offsetWidth;
+  focusEl.style.animation = '';
+  clearTimeout(focusEl._t);
+  focusEl._t = setTimeout(() => { focusEl.hidden = true; }, 700);
+}
+
+async function tapToFocus(x, y) {
+  const track = stream?.getVideoTracks()[0];
+  const caps = track?.getCapabilities?.() || {};
+  if (!track || !caps.focusMode || !caps.focusMode.includes('single-shot')) {
+    focusIndicator(x, y, false);
+    return;
+  }
+  const rect = video.getBoundingClientRect();
+  const fx = Math.max(0, Math.min(1, (x - rect.left) / rect.width));
+  const fy = Math.max(0, Math.min(1, (y - rect.top) / rect.height));
+  try {
+    await track.applyConstraints({
+      advanced: [{ focusMode: 'single-shot', points: [{ x: fx, y: fy }] }],
+    });
+    focusIndicator(x, y, true);
+  } catch {
+    focusIndicator(x, y, false);
+  }
+}
+
+// ---- Torch ----
+async function setupTrack() {
+  const track = stream?.getVideoTracks()[0];
+  if (!track) return;
+  const caps = track.getCapabilities?.() || {};
+
+  if (caps.focusMode && caps.focusMode.includes('continuous')) {
+    track.applyConstraints({ advanced: [{ focusMode: 'continuous' }] }).catch(() => {});
+  }
+
+  if (!caps.torch) {
+    torchBtn.disabled = true;
+    torchBtn.textContent = '🔦 Flash not supported';
+  } else {
+    torchBtn.disabled = false;
+    torchBtn.textContent = torchOn ? '🔦 Flash: ON' : '🔦 Flash: OFF';
+    torchBtn.classList.toggle('on', torchOn);
+  }
+}
+
+async function toggleTorch() {
+  const track = stream?.getVideoTracks()[0];
+  if (!track) return;
+  const caps = track.getCapabilities?.() || {};
+  if (!caps.torch) return;
+
+  const next = !torchOn;
+  try {
+    await track.applyConstraints({ advanced: [{ torch: next }] });
+    torchOn = next;
+    torchBtn.textContent = next ? '🔦 Flash: ON' : '🔦 Flash: OFF';
+    torchBtn.classList.toggle('on', next);
+    if (next) { hintEl.textContent = ''; lowLightFrames = 0; }
+  } catch { /* not applied */ }
+}
+
+function updateHint(brightness) {
+  if (torchOn) { hintEl.textContent = ''; lowLightFrames = 0; return; }
+  lowLightFrames = brightness < 30 ? lowLightFrames + 1 : Math.max(0, lowLightFrames - 1);
+  hintEl.textContent = lowLightFrames >= 4 ? 'Low light — try turning on Flash' : '';
+}
+
+// ---- Capture loop ----
 async function loop() {
   if (!running) return;
   try {
@@ -182,6 +258,7 @@ async function loop() {
     if (m.status === 'READY' && stab < STABILITY_MIN) m.status = 'GOOD';
     renderMetrics(m);
     setStatus(m.status, m.status.toLowerCase());
+    updateHint(m.brightness);
 
     if (m.status === 'READY') {
       readyStreak++;
@@ -227,7 +304,9 @@ function startFinger(i) {
   stepLabel.textContent = 'Step ' + (i + 1) + ' of 4 — ' + FINGERS[i].name;
   successEl.hidden = true;
   captureUI.hidden = false;
+  hintEl.textContent = '';
   readyStreak = 0;
+  lowLightFrames = 0;
   lastGray = null;
   setStatus('Position your finger', 'poor');
   running = true;
@@ -262,6 +341,7 @@ async function begin() {
       });
       video.srcObject = stream;
       await video.play();
+      await setupTrack();
     } catch (e) {
       setStatus('Camera unavailable', 'poor');
       beginBtn.hidden = false;
@@ -280,5 +360,7 @@ function nextFinger() {
 
 beginBtn.onclick = begin;
 continueBtn.onclick = nextFinger;
+torchBtn.onclick = toggleTorch;
+video.addEventListener('click', e => tapToFocus(e.clientX, e.clientY));
 video.addEventListener('loadedmetadata', placeRoi);
 window.addEventListener('resize', placeRoi);
