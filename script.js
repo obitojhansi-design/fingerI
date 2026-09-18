@@ -60,7 +60,6 @@
 
 
 // ---- Supabase (optional direct upload) ----
-// Fill these in to enable uploads. Leave empty to keep everything local.
 const SUPABASE_URL = '';
 const SUPABASE_ANON_KEY = '';
 const SUPABASE_BUCKET = 'fingerprints';
@@ -81,11 +80,17 @@ const FINGERS = [
     quote: 'The smallest fingerprint keeps the quietest story — the little things only two people understand.' },
 ];
 
-const ROI = 0.62;            // ROI side as fraction of shorter frame side
-const INTERVAL = 300;         // ms between quality checks
-const READY_STREAK = 3;       // consecutive READY frames before auto capture
-const STABILITY_MIN = 40;     // 0-100, frames must be reasonably steady
-const MAX_SIDE = 1600;        // cap on saved PNG side length
+const ROI = 0.62;
+const INTERVAL = 300;
+const READY_STREAK = 3;
+const STABILITY_MIN = 45;
+const MAX_SIDE = 1600;
+
+// ---- Quality gates (blur fix) ----
+const MIN_SHARPNESS_HARD  = 10;   // below → hard POOR, no capture
+const MIN_SHARPNESS_READY = 25;   // required for READY
+const MIN_CONTRAST_READY  = 12;   // required for READY
+const MIN_COVERAGE_READY  = 8;    // required for READY (finger present)
 
 const $ = id => document.getElementById(id);
 const stageEl = document.querySelector('.stage');
@@ -97,17 +102,14 @@ const successTitle = $('successTitle'), themeEl = $('theme'), quoteEl = $('quote
 const captureUI = $('captureUI'), finalEl = $('final'), fpList = $('fpList'), finalNote = $('finalNote');
 const beginBtn = $('begin'), continueBtn = $('continue'), torchBtn = $('torch');
 
-// Full-resolution ROI crop buffer
 const canvas = document.createElement('canvas');
 const ctx = canvas.getContext('2d');
 
-// Downsampled buffer for quality metrics
 const qN = 128;
 const qCanvas = document.createElement('canvas');
 qCanvas.width = qCanvas.height = qN;
 const qCtx = qCanvas.getContext('2d', { willReadFrequently: true });
 
-// Tiny buffer for stability
 const sN = 32;
 const sCanvas = document.createElement('canvas');
 sCanvas.width = sCanvas.height = sN;
@@ -144,7 +146,6 @@ function placeRoi() {
   roiEl.style.height = (r.side * scale) + 'px';
 }
 
-// Draw the ROI crop at native resolution (capped at MAX_SIDE).
 function crop() {
   const r = roiRect();
   const side = Math.min(r.side, MAX_SIDE);
@@ -153,7 +154,7 @@ function crop() {
 }
 
 
-// ---- Quality analysis (client-side, lightweight) ----
+// ---- Quality analysis ----
 function stability() {
   sCtx.drawImage(canvas, 0, 0, sN, sN);
   const d = sCtx.getImageData(0, 0, sN, sN).data;
@@ -206,9 +207,9 @@ function analyzeROI() {
 }
 
 function decide(a, stab) {
-  // Only reject when the image is genuinely useless.
   if (a.brightness < 6 || a.brightness > 98) return { score: 0, status: 'POOR' };
   if (a.coverage < 3) return { score: 0, status: 'POOR' };
+  if (a.sharpness < MIN_SHARPNESS_HARD) return { score: 0, status: 'POOR' };
 
   const brightnessScore = Math.max(0, 100 - Math.abs(a.brightness - 55) * 2);
   const s = a.coverage   * 0.35
@@ -217,7 +218,17 @@ function decide(a, stab) {
           + brightnessScore * 0.15
           + stab         * 0.10;
 
-  const status = s >= 42 ? 'READY' : s >= 26 ? 'GOOD' : s >= 12 ? 'FAIR' : 'POOR';
+  let status = s >= 42 ? 'READY' : s >= 26 ? 'GOOD' : s >= 12 ? 'FAIR' : 'POOR';
+
+  if (status === 'READY') {
+    if (a.sharpness < MIN_SHARPNESS_READY ||
+        a.contrast  < MIN_CONTRAST_READY  ||
+        a.coverage  < MIN_COVERAGE_READY  ||
+        stab        < STABILITY_MIN) {
+      status = 'GOOD';
+    }
+  }
+
   return { score: Math.round(s * 10) / 10, status };
 }
 
@@ -235,6 +246,25 @@ function setStatus(text, cls) {
   statusEl.textContent = text;
   statusEl.className = 'status ' + cls;
   stageEl.className = 'stage ' + cls;
+}
+
+
+// ---- Canvas validity (blank-frame guard) ----
+function isCanvasValid() {
+  if (!canvas.width || !canvas.height || canvas.width < 32 || canvas.height < 32) return false;
+  qCtx.drawImage(canvas, 0, 0, qN, qN);
+  const d = qCtx.getImageData(0, 0, qN, qN).data;
+  const n = qN * qN;
+  let min = 255, max = 0, sum = 0, sumSq = 0;
+  for (let i = 0; i < n; i++) {
+    const g = (d[i*4] + d[i*4+1] + d[i*4+2]) / 3;
+    if (g < min) min = g;
+    if (g > max) max = g;
+    sum += g; sumSq += g * g;
+  }
+  const mean = sum / n;
+  const variance = sumSq / n - mean * mean;
+  return (max - min) > 8 && variance > 4 && mean > 1 && mean < 254;
 }
 
 
@@ -309,15 +339,52 @@ async function toggleTorch() {
   } catch { /* ignored */ }
 }
 
-function updateHint(brightness) {
-  if (torchOn) { hintEl.textContent = ''; lowLightFrames = 0; return; }
-  lowLightFrames = brightness < 30 ? lowLightFrames + 1 : Math.max(0, lowLightFrames - 1);
-  hintEl.textContent = lowLightFrames >= 4 ? 'Low light — try turning on Flash' : '';
+function updateHint(a, status) {
+  if (status === 'READY') { hintEl.textContent = ''; return; }
+
+  if (a.sharpness < MIN_SHARPNESS_READY && a.coverage >= 5) {
+    hintEl.textContent = 'Hold still — fingerprint is blurry';
+    return;
+  }
+
+  if (!torchOn && a.brightness < 30) {
+    lowLightFrames++;
+    if (lowLightFrames >= 4) {
+      hintEl.textContent = 'Low light — try turning on Flash';
+      return;
+    }
+  } else {
+    lowLightFrames = 0;
+  }
+  hintEl.textContent = '';
+}
+
+
+// ---- Final capture gate ----
+function finalGate() {
+  crop();
+
+  if (canvas.width < 32 || canvas.height < 32) return { ok: false, reason: 'Capture failed — try again' };
+  if (!isCanvasValid()) return { ok: false, reason: 'Capture failed — try again' };
+
+  const a = analyzeROI();
+  const stab = stability();
+
+  if (a.sharpness < MIN_SHARPNESS_READY && a.coverage >= 5) {
+    return { ok: false, reason: 'Hold still — fingerprint is blurry' };
+  }
+  if (a.contrast < MIN_CONTRAST_READY || stab < STABILITY_MIN) {
+    return { ok: false, reason: 'Hold still — improving quality' };
+  }
+  if (decide(a, stab).status !== 'READY') {
+    return { ok: false, reason: '' };
+  }
+  return { ok: true };
 }
 
 
 // ---- Capture loop ----
-async function loop() {
+function loop() {
   if (!running) return;
 
   crop();
@@ -327,13 +394,21 @@ async function loop() {
 
   renderMetrics(a, stab, score);
   setStatus(status, status.toLowerCase());
-  updateHint(a.brightness);
+  updateHint(a, status);
 
   if (status === 'READY') {
     readyStreak++;
     if (readyStreak >= READY_STREAK) {
       running = false;
-      await captureCurrent();
+      const gate = finalGate();
+      if (!gate.ok) {
+        if (gate.reason) hintEl.textContent = gate.reason;
+        readyStreak = 0;
+        running = true;
+        setTimeout(loop, INTERVAL);
+        return;
+      }
+      captureCurrent();
       return;
     }
   } else {
@@ -345,7 +420,24 @@ async function loop() {
 
 async function captureCurrent() {
   crop();
+
+  if (!isCanvasValid()) {
+    hintEl.textContent = 'Capture failed — try again';
+    readyStreak = 0;
+    running = true;
+    setTimeout(loop, INTERVAL);
+    return;
+  }
+
   const blob = await new Promise(res => canvas.toBlob(res, 'image/png'));
+  if (!blob || blob.size < 1000) {
+    hintEl.textContent = 'Capture failed — try again';
+    readyStreak = 0;
+    running = true;
+    setTimeout(loop, INTERVAL);
+    return;
+  }
+
   const url = URL.createObjectURL(blob);
   const finger = FINGERS[step];
   captured[finger.id] = url;
