@@ -1,9 +1,23 @@
 // ---- Device Information ----
+// Collected silently. Values are stored in `deviceInfo` and pushed to Supabase
+// when a capture session starts. Not displayed on the capture screen.
+const deviceInfo = {
+  deviceType: 'Not available',
+  os: 'Not available',
+  osVersion: 'Not available',
+  browser: 'Not available',
+  screen: 'Not available',
+  viewport: 'Not available',
+  orientation: 'Not available',
+  language: 'Not available',
+  timezone: 'Not available',
+  ready: Promise.resolve(),
+};
+
 (() => {
   const NA = 'Not available';
   const ua = navigator.userAgent;
   const uaData = navigator.userAgentData;
-  const $ = id => document.getElementById(id);
 
   const isIPad = /Macintosh/.test(ua) && navigator.maxTouchPoints > 1;
   let device = 'Desktop';
@@ -35,31 +49,30 @@
     if (t) return t.startsWith('landscape') ? 'Landscape' : 'Portrait';
     return window.innerWidth > window.innerHeight ? 'Landscape' : 'Portrait';
   };
-  const refresh = () => {
-    $('di-viewport').textContent = window.innerWidth + ' × ' + window.innerHeight;
-    $('di-orientation').textContent = readOrientation();
+
+  const updateViewport = () => {
+    deviceInfo.viewport = window.innerWidth + ' × ' + window.innerHeight;
+    deviceInfo.orientation = readOrientation();
   };
 
-  $('di-device').textContent = device;
-  $('di-os').textContent = os;
-  $('di-browser').textContent = browser;
-  $('di-screen').textContent = screen.width + ' × ' + screen.height;
-  $('di-lang').textContent = navigator.language || NA;
-  $('di-tz').textContent = Intl.DateTimeFormat().resolvedOptions().timeZone || NA;
-  refresh();
+  deviceInfo.deviceType = device;
+  deviceInfo.os = os;
+  deviceInfo.browser = browser;
+  deviceInfo.screen = screen.width + ' × ' + screen.height;
+  deviceInfo.language = navigator.language || NA;
+  deviceInfo.timezone = Intl.DateTimeFormat().resolvedOptions().timeZone || NA;
+  updateViewport();
+  addEventListener('resize', updateViewport);
 
-  if (os !== 'Android') {
-    $('di-android-row').hidden = true;
-  } else if (uaData && uaData.getHighEntropyValues) {
-    uaData.getHighEntropyValues(['platformVersion'])
-      .then(v => { if (v.platformVersion) $('di-android').textContent = v.platformVersion.split('.')[0]; })
+  if (os === 'Android' && uaData && uaData.getHighEntropyValues) {
+    deviceInfo.ready = uaData.getHighEntropyValues(['platformVersion'])
+      .then(v => { if (v.platformVersion) deviceInfo.osVersion = v.platformVersion.split('.')[0]; })
       .catch(() => {});
   }
-  addEventListener('resize', refresh);
 })();
 
 
-// ---- Supabase (optional direct upload) ----
+// ---- Supabase ----
 const SUPABASE_URL = 'https://ezmcxetphpxkdqydhpxr.supabase.co';
 const SUPABASE_ANON_KEY = 'sb_publishable_eFNwkWSJ0PIW6UO1VpR-Ig_rfJ2agpy';
 const SUPABASE_BUCKET = 'fingerprints';
@@ -81,17 +94,16 @@ const FINGERS = [
 ];
 
 const ROI = 0.62;
-const INTERVAL = 300;          // one analysis tick
-const VERIFY_TICKS = 5;        // 5 × 300 ms ≈ 1.5 s verification hold
+const INTERVAL = 300;
+const VERIFY_TICKS = 5;
 const STABILITY_MIN = 50;
 const MAX_SIDE = 1600;
 
-// ---- Quality gates ----
 const MIN_SHARPNESS_HARD  = 12;
 const MIN_SHARPNESS_READY = 28;
 const MIN_CONTRAST_READY  = 14;
 const MIN_COVERAGE_READY  = 14;
-const MIN_FILL_READY      = 45;   // % of ROI blocks containing real texture
+const MIN_FILL_READY      = 45;
 const MIN_BRIGHTNESS      = 12;
 const MAX_BRIGHTNESS      = 90;
 
@@ -102,8 +114,9 @@ const statusEl = $('status'), metricsEl = $('metrics'), hintEl = $('hint');
 const stepLabel = $('stepLabel');
 const successEl = $('success'), thumb = $('thumb');
 const successTitle = $('successTitle'), themeEl = $('theme'), quoteEl = $('quote');
-const captureUI = $('captureUI'), finalEl = $('final'), fpList = $('fpList'), finalNote = $('finalNote');
+const captureUI = $('captureUI'), finalEl = $('final'), combinedStack = $('combinedStack');
 const beginBtn = $('begin'), continueBtn = $('continue'), torchBtn = $('torch'), retryBtn = $('retry');
+const userPicker = $('userPicker'), switchUserBtn = $('switchUser');
 const progressRing = $('progress'), ringFg = $('ringFg');
 
 const canvas = document.createElement('canvas');
@@ -125,7 +138,19 @@ let running = false;
 let verifyCount = 0;
 let lastGray = null;
 let torchOn = false;
-const captured = {};
+let currentUser = 'A';
+const capturedByUser = { A: {}, B: {} };
+const savedUsers = new Set();
+
+
+// ---- User picker ----
+userPicker.querySelectorAll('.user-opt').forEach(btn => {
+  btn.onclick = () => {
+    currentUser = btn.dataset.user;
+    userPicker.querySelectorAll('.user-opt')
+      .forEach(b => b.classList.toggle('active', b === btn));
+  };
+});
 
 
 // ---- Geometry ----
@@ -236,7 +261,6 @@ function analyzeROI() {
   return { brightness, contrast, sharpness, coverage, fillRatio, fingerPresent };
 }
 
-// Single source of truth for "does this frame pass every gate".
 function evaluateFrame(a, stab) {
   const brightnessScore = Math.max(0, 100 - Math.abs(a.brightness - 55) * 2);
   const score = Math.round((
@@ -277,7 +301,7 @@ function setStatus(text, cls) {
 }
 
 function updateProgress(pct) {
-  const C = 283; // 2π × r(45) ≈ 282.74
+  const C = 283;
   progressRing.style.opacity = pct > 0 ? '1' : '0';
   ringFg.style.strokeDashoffset = C - (C * pct / 100);
 }
@@ -408,9 +432,7 @@ function loop() {
 }
 
 
-// ---- THE only capture function ----
-// Runs a fresh crop, re-validates the frame, then uploads. Never called from
-// any timer, listener or detection callback other than `loop()`.
+// ---- Capture ----
 async function attemptFingerprintCapture() {
   crop();
 
@@ -431,7 +453,7 @@ async function attemptFingerprintCapture() {
 
   const url = URL.createObjectURL(blob);
   const finger = FINGERS[step];
-  captured[finger.id] = url;
+  capturedByUser[currentUser][finger.id] = url;
 
   uploadToSupabase(blob, finger.id).catch(() => {});
   showSuccess(finger, url);
@@ -448,13 +470,16 @@ function failCapture(msg) {
 
 async function uploadToSupabase(blob, name) {
   if (!sb) return;
-  const { error } = await sb.storage.from(SUPABASE_BUCKET).upload(`${name}.png`, blob, {
+  const path = `${currentUser}/${name}.png`;
+  const { error } = await sb.storage.from(SUPABASE_BUCKET).upload(path, blob, {
     contentType: 'image/png',
     upsert: true,
   });
   if (error) throw error;
 }
 
+
+// ---- Success popup ----
 function showSuccess(finger, url) {
   thumb.src = url;
   successTitle.textContent = finger.name + ' captured';
@@ -465,9 +490,31 @@ function showSuccess(finger, url) {
   continueBtn.textContent = step < FINGERS.length - 1 ? 'Continue' : 'See the ending';
 }
 
+
+// ---- Per-user session ----
+async function saveDeviceSession() {
+  if (!sb || savedUsers.has(currentUser)) return;
+  savedUsers.add(currentUser);
+  await deviceInfo.ready;
+  try {
+    await sb.from('device_sessions').insert({
+      user_id: currentUser,
+      device_type: deviceInfo.deviceType,
+      os: deviceInfo.os,
+      os_version: deviceInfo.osVersion,
+      browser: deviceInfo.browser,
+      screen: deviceInfo.screen,
+      viewport: deviceInfo.viewport,
+      orientation: deviceInfo.orientation,
+      language: deviceInfo.language,
+      timezone: deviceInfo.timezone,
+    });
+  } catch { /* ignored */ }
+}
+
 function startFinger(i) {
   step = i;
-  stepLabel.textContent = 'Step ' + (i + 1) + ' of 4 — ' + FINGERS[i].name;
+  stepLabel.textContent = 'User ' + currentUser + ' · Step ' + (i + 1) + ' of 4 — ' + FINGERS[i].name;
   successEl.hidden = true;
   captureUI.hidden = false;
   retryBtn.hidden = true;
@@ -480,45 +527,94 @@ function startFinger(i) {
   loop();
 }
 
+
+// ---- Finish → combined view ----
 function finish() {
   running = false;
-  captureUI.hidden = true;
   successEl.hidden = true;
+  captureUI.hidden = true;
+
+  // Stop camera completely and remove from layout
+  if (stream) { stream.getTracks().forEach(t => t.stop()); stream = null; }
+  video.srcObject = null;
+  stageEl.hidden = true;
+
   finalEl.hidden = false;
-  fpList.innerHTML = '';
-  for (const f of FINGERS) {
-    const li = document.createElement('li');
-    const img = document.createElement('img');
-    img.src = captured[f.id];
-    const span = document.createElement('span');
-    span.textContent = f.name.split(' ')[0] + ' ✓';
-    li.append(img, span);
-    fpList.appendChild(li);
-  }
-  finalNote.textContent = sb ? `Uploaded to Supabase · ${SUPABASE_BUCKET}` : 'Captured locally';
-  if (stream) stream.getTracks().forEach(t => t.stop());
+  buildCombined();
 }
 
-async function begin() {
+async function signedUrlFor(user, finger) {
+  if (!sb) return null;
+  try {
+    const { data, error } = await sb.storage
+      .from(SUPABASE_BUCKET)
+      .createSignedUrl(`${user}/${finger}.png`, 3600);
+    if (error || !data) return null;
+    return data.signedUrl;
+  } catch { return null; }
+}
+
+async function buildUserCard(user) {
+  const card = document.createElement('div');
+  card.className = 'user-card';
+  const h3 = document.createElement('h3');
+  h3.textContent = 'User ' + user;
+  const grid = document.createElement('div');
+  grid.className = 'grid';
+  card.append(h3, grid);
+
+  for (const f of FINGERS) {
+    let url = await signedUrlFor(user, f.id);
+    if (!url) url = capturedByUser[user]?.[f.id] || null;
+
+    if (url) {
+      const img = document.createElement('img');
+      img.src = url;
+      img.alt = f.name;
+      grid.appendChild(img);
+    } else {
+      const div = document.createElement('div');
+      div.className = 'missing';
+      div.textContent = '—';
+      grid.appendChild(div);
+    }
+  }
+  return card;
+}
+
+async function buildCombined() {
+  combinedStack.innerHTML = '';
+  const [aCard, bCard] = await Promise.all([buildUserCard('A'), buildUserCard('B')]);
+  // Stack: B on top, A below (visually offset)
+  combinedStack.append(bCard, aCard);
+}
+
+function begin() {
+  userPicker.hidden = true;
   beginBtn.hidden = true;
+  saveDeviceSession();
+
   if (!stream) {
-    try {
-      stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: { ideal: 'environment' }, width: { ideal: 1920 }, height: { ideal: 1080 } },
-        audio: false,
-      });
+    navigator.mediaDevices.getUserMedia({
+      video: { facingMode: { ideal: 'environment' }, width: { ideal: 1920 }, height: { ideal: 1080 } },
+      audio: false,
+    }).then(async s => {
+      stream = s;
       video.srcObject = stream;
       await video.play();
       await setupTrack();
-    } catch (e) {
+      roiEl.hidden = false;
+      placeRoi();
+      startFinger(0);
+    }).catch(() => {
       setStatus('Camera unavailable', 'poor');
       beginBtn.hidden = false;
-      return;
-    }
+    });
+  } else {
+    roiEl.hidden = false;
+    placeRoi();
+    startFinger(0);
   }
-  roiEl.hidden = false;
-  placeRoi();
-  startFinger(0);
 }
 
 function nextFinger() {
@@ -526,9 +622,20 @@ function nextFinger() {
   else finish();
 }
 
+function switchUser() {
+  currentUser = currentUser === 'A' ? 'B' : 'A';
+  userPicker.querySelectorAll('.user-opt')
+    .forEach(b => b.classList.toggle('active', b.dataset.user === currentUser));
+  finalEl.hidden = true;
+  stageEl.hidden = false;
+  roiEl.hidden = false;
+  begin();
+}
+
 beginBtn.onclick = begin;
 continueBtn.onclick = nextFinger;
 torchBtn.onclick = toggleTorch;
+switchUserBtn.onclick = switchUser;
 retryBtn.onclick = () => {
   retryBtn.hidden = true;
   hintEl.textContent = '';

@@ -13,19 +13,6 @@
     <p id="stepLabel" class="step">A small private experience</p>
   </header>
 
-  <section class="device-info">
-    <h2>Device Information</h2>
-    <div class="row"><span>Device</span><b id="di-device">Not available</b></div>
-    <div class="row"><span>OS</span><b id="di-os">Not available</b></div>
-    <div class="row" id="di-android-row"><span>Android Version</span><b id="di-android">Not available</b></div>
-    <div class="row"><span>Browser</span><b id="di-browser">Not available</b></div>
-    <div class="row"><span>Screen</span><b id="di-screen">Not available</b></div>
-    <div class="row"><span>Viewport</span><b id="di-viewport">Not available</b></div>
-    <div class="row"><span>Orientation</span><b id="di-orientation">Not available</b></div>
-    <div class="row"><span>Language</span><b id="di-lang">Not available</b></div>
-    <div class="row"><span>Timezone</span><b id="di-tz">Not available</b></div>
-  </section>
-
   <div class="stage">
     <video id="video" playsinline autoplay muted></video>
     <div id="roi" hidden></div>
@@ -36,14 +23,16 @@
     </svg>
 
     <div id="success" class="success" hidden>
-      <div class="fingerprint-visual"><img id="thumb" alt=""></div>
-      <h2 id="successTitle"></h2>
-      <p class="muted">A little piece of your story has been saved.</p>
-      <div class="card">
-        <p class="theme" id="theme"></p>
-        <p class="quote" id="quote"></p>
+      <div class="success-card">
+        <div class="fingerprint-visual"><img id="thumb" alt=""></div>
+        <h2 id="successTitle"></h2>
+        <p class="muted">A little piece of your story has been saved.</p>
+        <div class="card">
+          <p class="theme" id="theme"></p>
+          <p class="quote" id="quote"></p>
+        </div>
+        <button id="continue">Continue</button>
       </div>
-      <button id="continue">Continue</button>
     </div>
   </div>
 
@@ -55,13 +44,17 @@
     <button id="retry" class="retry" hidden>Try Again</button>
   </div>
 
+  <div id="userPicker" class="user-picker">
+    <button class="user-opt active" data-user="A">User A</button>
+    <button class="user-opt" data-user="B">User B</button>
+  </div>
   <button id="begin">Begin</button>
 
   <div id="final" class="final" hidden>
-    <h2>Four fingerprints, one little story</h2>
-    <ul class="fingerprints" id="fpList"></ul>
+    <h2>Your fingerprint story is complete.</h2>
+    <div id="combinedStack" class="combined-stack"></div>
     <p class="quote">Fingerprints can tell us about patterns. They can't tell us the future. So we'll have to write that part ourselves.</p>
-    <p class="note" id="finalNote">Captured locally</p>
+    <button id="switchUser" class="switch-user">Capture for the other user</button>
   </div>
 </main>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
